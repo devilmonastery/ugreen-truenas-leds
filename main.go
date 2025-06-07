@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -65,6 +66,11 @@ type DiskActivity struct {
 	Writes   uint64
 	Activity uint64 // Reads + Writes
 }
+
+var (
+	statusMu      sync.Mutex
+	lastLedStatus = make(map[int]LedStatus)
+)
 
 func verifyChecksum(data []byte) bool {
 	if len(data) < 2 {
@@ -223,16 +229,25 @@ type ledState struct {
 
 var lastLedStates = make(map[int]ledState)
 
+func updateLedStatus(fd, id int) {
+	status, err := readLedStatus(fd, id)
+	if err == nil {
+		statusMu.Lock()
+		lastLedStatus[id] = status
+		statusMu.Unlock()
+	}
+}
+
 func setLedColor(fd, id int, r, g, b byte) error {
 	state := lastLedStates[id]
 	if state.color == [3]byte{r, g, b} {
 		return nil
 	}
-	// log.Printf("Setting LED %s color to RGB(%d, %d, %d)", ledNames[id], r, g, b)
 	err := modifyLedWithRetry(fd, id, 0x02, []byte{r, g, b}, nil)
 	if err == nil {
 		state.color = [3]byte{r, g, b}
 		lastLedStates[id] = state
+		updateLedStatus(fd, id)
 	}
 	return err
 }
@@ -242,11 +257,11 @@ func setLedBrightness(fd, id int, brightness byte) error {
 	if state.brightness == brightness {
 		return nil
 	}
-	// log.Printf("Setting LED %s brightness to %d", ledNames[id], brightness)
 	err := modifyLedWithRetry(fd, id, 0x01, []byte{brightness}, nil)
 	if err == nil {
 		state.brightness = brightness
 		lastLedStates[id] = state
+		updateLedStatus(fd, id)
 	}
 	return err
 }
@@ -265,16 +280,12 @@ func setLedMode(fd, id int, mode byte, params []byte) error {
 	var err error
 	switch mode {
 	case 0: // off
-		// log.Printf("Setting LED %s to OFF", ledNames[id])
 		err = modifyLedWithRetry(fd, id, 0x03, []byte{0}, nil)
 	case 1: // on
-		// log.Printf("Setting LED %s to ON", ledNames[id])
 		err = modifyLedWithRetry(fd, id, 0x03, []byte{1}, nil)
 	case 2: // blink
-		// log.Printf("Setting LED %s to BLINK with params %v", ledNames[id], params)
 		err = modifyLedWithRetry(fd, id, 0x04, params, nil)
 	case 3: // breath
-		// log.Printf("Setting LED %s to BREATH with params %v", ledNames[id], params)
 		err = modifyLedWithRetry(fd, id, 0x05, params, nil)
 	}
 	if err == nil {
@@ -285,6 +296,7 @@ func setLedMode(fd, id int, mode byte, params []byte) error {
 			state.params = [4]byte{}
 		}
 		lastLedStates[id] = state
+		updateLedStatus(fd, id)
 	}
 	return err
 }
