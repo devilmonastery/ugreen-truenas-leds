@@ -3,9 +3,13 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -48,6 +52,18 @@ type LedStatus struct {
 	ColorB     uint8
 	TOn        uint16
 	TOff       uint16
+}
+
+type DiskInfo struct {
+	Name   string // sda, sdb, etc.
+	HCTL   string // 2:0:0:0
+	Serial string // 45B0A037F4MJ
+}
+
+type DiskActivity struct {
+	Reads    uint64
+	Writes   uint64
+	Activity uint64 // Reads + Writes
 }
 
 func verifyChecksum(data []byte) bool {
@@ -163,19 +179,6 @@ func ledNameToID(name string) (int, error) {
 	return -1, fmt.Errorf("unknown LED name: %s", name)
 }
 
-func usage() {
-	fmt.Println("Usage: truenas-leds <led> [commands]")
-	fmt.Println("LED names: power netdev disk1 disk2 ... disk8")
-	fmt.Println("Commands:")
-	fmt.Println("  -on | -off")
-	fmt.Println("  -blink <on_ms> <off_ms>")
-	fmt.Println("  -breath <on_ms> <off_ms>")
-	fmt.Println("  -color <r> <g> <b>")
-	fmt.Println("  -brightness <val>")
-	fmt.Println("  -status")
-	os.Exit(1)
-}
-
 func confirmStatus(fd int, id int, wantOn *bool) bool {
 	for retry := 0; retry < maxRetry; retry++ {
 		time.Sleep(usleepQueryResult)
@@ -210,9 +213,370 @@ func modifyLedWithRetry(fd int, id int, command byte, params []byte, wantOn *boo
 	return fmt.Errorf("failed to set %s after %d retries: %v", ledNames[id], maxRetry, lastErr)
 }
 
+// Wrapper to avoid redundant writes: only call modifyLedWithRetry if value changes
+type ledState struct {
+	color      [3]byte
+	brightness byte
+	mode       byte    // 0=off, 1=on, 2=blink, 3=breath
+	params     [4]byte // for blink/breath params
+}
+
+var lastLedStates = make(map[int]ledState)
+
+func setLedColor(fd, id int, r, g, b byte) error {
+	state := lastLedStates[id]
+	if state.color == [3]byte{r, g, b} {
+		return nil
+	}
+	// log.Printf("Setting LED %s color to RGB(%d, %d, %d)", ledNames[id], r, g, b)
+	err := modifyLedWithRetry(fd, id, 0x02, []byte{r, g, b}, nil)
+	if err == nil {
+		state.color = [3]byte{r, g, b}
+		lastLedStates[id] = state
+	}
+	return err
+}
+
+func setLedBrightness(fd, id int, brightness byte) error {
+	state := lastLedStates[id]
+	if state.brightness == brightness {
+		return nil
+	}
+	// log.Printf("Setting LED %s brightness to %d", ledNames[id], brightness)
+	err := modifyLedWithRetry(fd, id, 0x01, []byte{brightness}, nil)
+	if err == nil {
+		state.brightness = brightness
+		lastLedStates[id] = state
+	}
+	return err
+}
+
+func setLedMode(fd, id int, mode byte, params []byte) error {
+	state := lastLedStates[id]
+	// Only skip redundant writes for off/on, or for blink/breath if params match
+	if state.mode == mode {
+		if mode == 0 || mode == 1 {
+			return nil
+		}
+		if (mode == 2 || mode == 3) && params != nil && state.params == [4]byte{params[0], params[1], params[2], params[3]} {
+			return nil
+		}
+	}
+	var err error
+	switch mode {
+	case 0: // off
+		// log.Printf("Setting LED %s to OFF", ledNames[id])
+		err = modifyLedWithRetry(fd, id, 0x03, []byte{0}, nil)
+	case 1: // on
+		// log.Printf("Setting LED %s to ON", ledNames[id])
+		err = modifyLedWithRetry(fd, id, 0x03, []byte{1}, nil)
+	case 2: // blink
+		// log.Printf("Setting LED %s to BLINK with params %v", ledNames[id], params)
+		err = modifyLedWithRetry(fd, id, 0x04, params, nil)
+	case 3: // breath
+		// log.Printf("Setting LED %s to BREATH with params %v", ledNames[id], params)
+		err = modifyLedWithRetry(fd, id, 0x05, params, nil)
+	}
+	if err == nil {
+		state.mode = mode
+		if params != nil && (mode == 2 || mode == 3) && len(params) == 4 {
+			state.params = [4]byte{params[0], params[1], params[2], params[3]}
+		} else {
+			state.params = [4]byte{}
+		}
+		lastLedStates[id] = state
+	}
+	return err
+}
+
+// discoverDisks returns disks sorted by HCTL, like lsblk -S -x hctl -o name,hctl,serial
+func discoverDisks() ([]DiskInfo, error) {
+	var disks []DiskInfo
+
+	scsiDiskDir := "/sys/class/scsi_disk/"
+	entries, err := ioutil.ReadDir(scsiDiskDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		hctl := entry.Name() // e.g., "2:0:0:0"
+		devicePath := filepath.Join(scsiDiskDir, hctl, "device")
+
+		// Find block device name (symlink ../../../../sda)
+		blockLinks, err := ioutil.ReadDir(filepath.Join(devicePath, "block"))
+		if err != nil || len(blockLinks) == 0 {
+			continue
+		}
+		name := blockLinks[0].Name()
+
+		// Read serial
+		serialBytes, err := ioutil.ReadFile(filepath.Join(devicePath, "serial"))
+		serial := ""
+		if err == nil {
+			serial = strings.TrimSpace(string(serialBytes))
+		}
+
+		disks = append(disks, DiskInfo{
+			Name:   name,
+			HCTL:   hctl,
+			Serial: serial,
+		})
+	}
+
+	// Sort by HCTL (lexicographically is fine for 0:0:0:0 ... 5:0:0:0)
+	sort.Slice(disks, func(i, j int) bool {
+		return disks[i].HCTL < disks[j].HCTL
+	})
+
+	return disks, nil
+}
+
+// Map disk LED index (1-based) to device name, given discovered disks
+func ledIndexToDiskName(disks []DiskInfo, ledIndex int) string {
+	// Map: disk1→2:0:0:0, disk2→3:0:0:0, disk3→4:0:0:0, disk4→5:0:0:0, disk5→0:0:0:0, disk6→1:0:0:0
+	hctlMap := []string{
+		"",        // 0: not used
+		"2:0:0:0", // disk1
+		"3:0:0:0", // disk2
+		"4:0:0:0", // disk3
+		"5:0:0:0", // disk4
+		"0:0:0:0", // disk5
+		"1:0:0:0", // disk6
+	}
+	if ledIndex < 1 || ledIndex > 6 {
+		return ""
+	}
+	hctl := hctlMap[ledIndex]
+	for _, d := range disks {
+		if d.HCTL == hctl {
+			return d.Name
+		}
+	}
+	return ""
+}
+
+func getDiskActivity(devices []string) (map[string]DiskActivity, error) {
+	stats := make(map[string]DiskActivity)
+	data, err := ioutil.ReadFile("/proc/diskstats")
+	if err != nil {
+		return stats, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 14 {
+			continue
+		}
+		name := fields[2]
+		for _, dev := range devices {
+			if name == dev {
+				reads, _ := strconv.ParseUint(fields[5], 10, 64)  // sectors read
+				writes, _ := strconv.ParseUint(fields[9], 10, 64) // sectors written
+				stats[dev] = DiskActivity{
+					Reads:    reads,
+					Writes:   writes,
+					Activity: reads + writes,
+				}
+			}
+		}
+	}
+	return stats, nil
+}
+
+func colorForActivity(reads, writes uint64) (r, g, b byte) {
+	if reads == 0 && writes == 0 {
+		return 0, 0, 0 // off
+	}
+	total := reads + writes
+	if total == 0 {
+		return 0, 0, 0
+	}
+	// Blend: blue for reads, red for writes
+	// Ratio: reads/(reads+writes) for blue, writes/(reads+writes) for red
+	blue := float64(reads) / float64(total)
+	red := float64(writes) / float64(total)
+	return byte(red * 255), 0, byte(blue * 255)
+}
+
+func brightnessForActivity(activity uint64, maxActivity uint64) byte {
+	if maxActivity == 0 {
+		return 32 // minimum visible
+	}
+	// Scale: min 32, max 255
+	val := 32 + int(float64(activity)/float64(maxActivity)*223)
+	if val > 255 {
+		val = 255
+	}
+	return byte(val)
+}
+
+func colorForNetActivity(rx, tx uint64) (r, g, b byte) {
+	if rx == 0 && tx == 0 {
+		return 0, 0, 0 // off
+	}
+	total := rx + tx
+	if total == 0 {
+		return 0, 0, 0
+	}
+	// Blend: blue for RX, red for TX
+	blue := float64(rx) / float64(total)
+	red := float64(tx) / float64(total)
+	return byte(red * 255), 0, byte(blue * 255)
+}
+
+func brightnessForNetActivity(activity, maxActivity uint64) byte {
+	if maxActivity == 0 {
+		return 32 // minimum visible
+	}
+	val := 32 + int(float64(activity)/float64(maxActivity)*223)
+	if val > 255 {
+		val = 255
+	}
+	return byte(val)
+}
+
+// Call this in main for activity monitoring mode
+func monitorDiskActivityAndSetLeds(fd int, disks []DiskInfo) {
+	// Map LED index to device name
+	ledToDev := make(map[int]string)
+	devToLed := make(map[string]int)
+	for i := 1; i <= 6; i++ {
+		dev := ledIndexToDiskName(disks, i)
+		if dev != "" {
+			ledToDev[i] = dev
+			devToLed[dev] = i
+		}
+	}
+
+	// Get initial stats
+	devices := []string{}
+	for _, dev := range ledToDev {
+		devices = append(devices, dev)
+	}
+	prevStats, _ := getDiskActivity(devices)
+
+	// Find max activity for scaling
+	maxActivity := uint64(0)
+	maxLanActivity := uint64(0)
+
+	pollMs := 50
+
+	for {
+		time.Sleep(time.Duration(pollMs) * time.Millisecond)
+
+		// get Disk activity
+		currStats, _ := getDiskActivity(devices)
+
+		deltas := make(map[string]DiskActivity)
+		for dev, curr := range currStats {
+			prev := prevStats[dev]
+			reads := curr.Reads - prev.Reads
+			writes := curr.Writes - prev.Writes
+			activity := reads + writes
+			if activity > maxActivity {
+				maxActivity = activity
+			}
+			deltas[dev] = DiskActivity{Reads: reads, Writes: writes, Activity: activity}
+		}
+
+		// Set disk LEDs
+		for i := 1; i <= 6; i++ {
+			dev := ledToDev[i]
+			delta := deltas[dev]
+			r, g, b := colorForActivity(delta.Reads, delta.Writes)
+			brightness := brightnessForActivity(delta.Activity, maxActivity)
+			if r == 0 && g == 0 && b == 0 {
+				// Off
+				setLedMode(fd, i+1, 0, nil) // i+1: ledID for disk1..disk6
+			} else {
+				setLedColor(fd, i+1, r, g, b)
+				setLedBrightness(fd, i+1, brightness)
+				setLedMode(fd, i+1, 1, nil) // on
+			}
+		}
+		prevStats = currStats
+
+		// Get network activity and set lan LED
+		rxTotal, txTotal, err := getNetworkActivityAll()
+		if err != nil {
+			log.Printf("Error reading network activity: %v", err)
+			continue
+		}
+		total := rxTotal + txTotal
+		if total > maxLanActivity {
+			maxLanActivity = total
+		}
+		r, g, b := colorForNetActivity(rxTotal, txTotal)
+		brightness := brightnessForNetActivity(total, maxLanActivity)
+		lanLedID := 1 // "lan" is index 1 in ledNames
+
+		if r == 0 && g == 0 && b == 0 {
+			// Off
+			setLedMode(fd, lanLedID, 0, nil)
+		} else {
+			setLedColor(fd, lanLedID, r, g, b)
+			setLedBrightness(fd, lanLedID, brightness)
+			// Blink: on blinkMs, off blinkMs
+			onMs := 100
+			offMs := 100
+			high := onMs + offMs
+			params := []byte{
+				byte(high >> 8), byte(high),
+				byte(onMs >> 8), byte(onMs),
+			}
+			setLedMode(fd, lanLedID, 2, params)
+		}
+	}
+}
+
+func getNetworkActivityAll() (rxTotal, txTotal uint64, err error) {
+	data, err := ioutil.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, ":") {
+			continue
+		}
+		iface := strings.SplitN(line, ":", 2)[0]
+		if iface == "lo" || strings.HasPrefix(iface, "veth") || strings.HasPrefix(iface, "docker") {
+			continue // skip loopback and common virtuals
+		}
+		fields := strings.Fields(line[strings.Index(line, ":")+1:])
+		if len(fields) < 9 {
+			continue
+		}
+		rxBytes, _ := strconv.ParseUint(fields[0], 10, 64)
+		txBytes, _ := strconv.ParseUint(fields[8], 10, 64)
+		rxTotal += rxBytes
+		txTotal += txBytes
+	}
+	return rxTotal, txTotal, nil
+}
+
 func main() {
 	if os.Geteuid() != 0 {
 		log.Fatal("This program must be run as root to access I2C devices.")
+	}
+
+	disks, err := discoverDisks()
+	if err != nil {
+		fmt.Println("Error discovering disks:", err)
+		return
+	}
+
+	fmt.Println("Discovered Disks:")
+	for i, disk := range disks {
+		fmt.Printf("Disk%d: %s (HCTL: %s, Serial: %s)\n", i+1, disk.Name, disk.HCTL, disk.Serial)
+	}
+
+	fmt.Println("UGREEN Disk LED to Device Mapping:")
+	for i := 1; i <= 6; i++ {
+		dev := ledIndexToDiskName(disks, i)
+		fmt.Printf("disk%d LED → %s\n", i, dev)
 	}
 
 	fd, err := syscall.Open("/dev/i2c-0", syscall.O_RDWR, 0600)
@@ -225,132 +589,5 @@ func main() {
 		log.Fatalf("Failed to set I2C_SLAVE: %v", errno)
 	}
 
-	var availableLEDs []int
-	for i, _ := range ledNames {
-		status, err := readLedStatus(fd, i)
-		if err == nil && status.Available {
-			availableLEDs = append(availableLEDs, i)
-		}
-	}
-
-	if len(os.Args) == 1 {
-		// No args: show all statuses
-		for i, name := range ledNames {
-			time.Sleep(8 * time.Millisecond)
-			status, err := readLedStatus(fd, i)
-			if err != nil || !status.Available {
-				fmt.Printf("%s: unavailable or non-existent\n", name)
-				continue
-			}
-			fmt.Printf("%s: status = %s, brightness = %d, color = RGB(%d, %d, %d)",
-				name, status.OpMode, status.Brightness, status.ColorR, status.ColorG, status.ColorB)
-			if status.OpMode == "blink" {
-				fmt.Printf(", blink_on = %d ms, blink_off = %d ms", status.TOn, status.TOff)
-			}
-			fmt.Println()
-		}
-		return
-	}
-
-	// Parse LED names
-	args := os.Args[1:]
-	ledIDs := []int{}
-	for len(args) > 0 && args[0][0] != '-' {
-		id, err := ledNameToID(args[0])
-		if err != nil {
-			usage()
-		}
-		ledIDs = append(ledIDs, id)
-		args = args[1:]
-	}
-	if len(ledIDs) == 0 {
-		usage()
-	}
-
-	// Parse and sequence commands
-	type ledOp struct {
-		command byte
-		params  []byte
-		wantOn  *bool // nil for color/brightness, pointer for on/off
-	}
-
-	var ops []ledOp
-	for len(args) > 0 {
-		cmd := args[0]
-		args = args[1:]
-		switch cmd {
-		case "-on", "-off":
-			val := byte(0)
-			wantOn := false
-			if cmd == "-on" {
-				val = 1
-				wantOn = true
-			}
-			ops = append(ops, ledOp{command: 0x03, params: []byte{val}, wantOn: &wantOn})
-		case "-blink", "-breath":
-			if len(args) < 2 {
-				usage()
-			}
-			tOn := uint16(atoi(args[0]))
-			tOff := uint16(atoi(args[1]))
-			args = args[2:]
-			tHigh := tOn + tOff
-			params := []byte{byte(tHigh >> 8), byte(tHigh), byte(tOn >> 8), byte(tOn)}
-			command := byte(0x04)
-			if cmd == "-breath" {
-				command = 0x05
-			}
-			ops = append(ops, ledOp{command: command, params: params, wantOn: nil})
-		case "-color":
-			if len(args) < 3 {
-				usage()
-			}
-			r := byte(atoi(args[0]))
-			g := byte(atoi(args[1]))
-			b := byte(atoi(args[2]))
-			args = args[3:]
-			ops = append(ops, ledOp{command: 0x02, params: []byte{r, g, b}, wantOn: nil})
-		case "-brightness":
-			if len(args) < 1 {
-				usage()
-			}
-			val := byte(atoi(args[0]))
-			args = args[1:]
-			ops = append(ops, ledOp{command: 0x01, params: []byte{val}, wantOn: nil})
-		case "-status":
-			for _, id := range ledIDs {
-				status, err := readLedStatus(fd, id)
-				if err != nil || !status.Available {
-					fmt.Printf("%s: unavailable or non-existent\n", ledNames[id])
-					continue
-				}
-				fmt.Printf("%s: status = %s, brightness = %d, color = RGB(%d, %d, %d)",
-					ledNames[id], status.OpMode, status.Brightness, status.ColorR, status.ColorG, status.ColorB)
-				if status.OpMode == "blink" {
-					fmt.Printf(", blink_on = %d ms, blink_off = %d ms", status.TOn, status.TOff)
-				}
-				fmt.Println()
-			}
-		default:
-			usage()
-		}
-	}
-
-	// Sequence all modifications for each LED
-	for _, id := range ledIDs {
-		for _, op := range ops {
-			if err := modifyLedWithRetry(fd, id, op.command, op.params, op.wantOn); err != nil {
-				fmt.Printf("Failed to set %s: %v\n", ledNames[id], err)
-			}
-		}
-	}
-}
-
-func atoi(s string) int {
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		fmt.Printf("Invalid number: %s\n", s)
-		os.Exit(1)
-	}
-	return v
+	monitorDiskActivityAndSetLeds(fd, disks)
 }
