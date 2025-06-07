@@ -1,0 +1,16 @@
+github.com/jonboulle/clockwork v0.5.0 h1:Hyh9A8u51kptdkR+cqRpT1EebBwTn1oK9YfGYbdFz6I=
+github.com/jonboulle/clockwork v0.5.0/go.mod h1:3mZlmanh0g2NDKO5TWZVJAfofYk64M7XN3SzBPjZF60=
+golang.org/x/image v0.25.0 h1:Y6uW6rH1y5y/LK1J8BPWZtr6yZ7hrsy6hFrXjgsc2fQ=
+golang.org/x/image v0.25.0/go.mod h1:tCAmOEGthTtkalusGp1g3xa2gke8J6c2N565dTyl9Rs=
+golang.org/x/image v0.28.0 h1:gdem5JW1OLS4FbkWgLO+7ZeFzYtL3xClb97GaUzYMFE=
+golang.org/x/image v0.28.0/go.mod h1:GUJYXtnGKEUgggyzh+Vxt+AviiCcyiwpsl8iQ8MvwGY=
+periph.io/x/cmd v0.0.0-20250505013507-e26d4877ae65 h1:FOgxxvTVaAhFjHAYJhvuLRC6uL/0MkVCyy3LZHsGXuI=
+periph.io/x/cmd v0.0.0-20250505013507-e26d4877ae65/go.mod h1:4/OlKQoxuRrXi0eml/e0Tuy5K83gFgYiePN0XXLFFCk=
+periph.io/x/conn/v3 v3.7.2 h1:qt9dE6XGP5ljbFnCKRJ9OOCoiOyBGlw7JZgoi72zZ1s=
+periph.io/x/conn/v3 v3.7.2/go.mod h1:Ao0b4sFRo4QOx6c1tROJU1fLJN1hUIYggjOrkIVnpGg=
+periph.io/x/d2xx v0.1.1 h1:LHp+u+qAWLB5THrTT/AzyjdvfUhllvDF5wBJP7uvn+U=
+periph.io/x/d2xx v0.1.1/go.mod h1:rLM321G11Fc14Pp088khBkmXb70Pxx/kCPaIK7uRUBc=
+periph.io/x/devices/v3 v3.7.4 h1:g9CGKTtiXS9iyDFDba4sr9pYde4dy+ZCKRPuKpKJdKo=
+periph.io/x/devices/v3 v3.7.4/go.mod h1:FqFG9RotW2aCkfIlAes3qxziwgjRTncTMS5cSOcizNg=
+periph.io/x/host/v3 v3.8.5 h1:g4g5xE1XZtDiGl1UAJaUur1aT7uNiFLMkyMEiZ7IHII=
+periph.io/x/host/v3 v3.8.5/go.mod h1:hPq8dISZIc+UNfWoRj+bPH3XEBQqJPdFdx218W92mdc=
