@@ -561,19 +561,19 @@ func monitorDiskActivityAndSetLeds(fd int, disks []DiskInfo) {
 		}
 
 		// Set disk LEDs
-		//for i := 1; i <= 6; i++ {
 		for i, disk := range disks {
 			dev := disk.Name
 			delta := deltas[dev]
+			// fmt.Printf("Disk %s: Reads=%d, Writes=%d, Activity=%d\n", dev, delta.Reads, delta.Writes, delta.Activity)
 			r, g, b := colorForActivity(delta.Reads, delta.Writes)
 			brightness := brightnessForActivity(delta.Activity, maxActivity)
 			if r == 0 && g == 0 && b == 0 {
 				// Off
-				setLedMode(fd, i+1, 0, nil) // i+1: ledID for disk1..disk6
+				setLedMode(fd, i+2, 0, nil)
 			} else {
-				setLedColor(fd, i+1, r, g, b)
-				setLedBrightness(fd, i+1, brightness)
-				setLedMode(fd, i+1, 1, nil) // on
+				setLedColor(fd, i+2, r, g, b)
+				setLedBrightness(fd, i+2, brightness)
+				setLedMode(fd, i+2, 1, nil) // on
 			}
 		}
 		prevStats = currStats
