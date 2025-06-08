@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -55,10 +54,14 @@ type LedStatus struct {
 	TOff       uint16
 }
 
+// DiskInfo describes a disk
 type DiskInfo struct {
-	Name   string // sda, sdb, etc.
-	HCTL   string // 2:0:0:0
-	Serial string // 45B0A037F4MJ
+	Name   string
+	HCTL   string
+	Serial string
+	Path   string // by-path link name, for sorting
+	PCIBus string // e.g. 0000:59:00.0
+	Port   int    // e.g. 1 for -ata-1
 }
 
 type DiskActivity struct {
@@ -176,17 +179,8 @@ func writeLedCommand(fd int, ledID int, command byte, params []byte) error {
 	return nil
 }
 
-func ledNameToID(name string) (int, error) {
-	for i, n := range ledNames {
-		if n == name {
-			return i, nil
-		}
-	}
-	return -1, fmt.Errorf("unknown LED name: %s", name)
-}
-
 func confirmStatus(fd int, id int, wantOn *bool) bool {
-	for retry := 0; retry < maxRetry; retry++ {
+	for range maxRetry {
 		time.Sleep(usleepQueryResult)
 		status, err := readLedStatus(fd, id)
 		if err == nil && status.Available {
@@ -305,72 +299,156 @@ func setLedMode(fd, id int, mode byte, params []byte) error {
 func discoverDisks() ([]DiskInfo, error) {
 	var disks []DiskInfo
 
+	serials, err := getBlockDevicesSerials()
+	if err != nil {
+		log.Printf("Error getting block device serials: %v", err)
+	}
+
+	// Map device name -> HCTL
+	hctlMap := make(map[string]string)
+
 	scsiDiskDir := "/sys/class/scsi_disk/"
-	entries, err := ioutil.ReadDir(scsiDiskDir)
+	entries, err := os.ReadDir(scsiDiskDir)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, entry := range entries {
-		hctl := entry.Name() // e.g., "2:0:0:0"
+		hctl := entry.Name()
 		devicePath := filepath.Join(scsiDiskDir, hctl, "device")
 
-		// Find block device name (symlink ../../../../sda)
-		blockLinks, err := ioutil.ReadDir(filepath.Join(devicePath, "block"))
+		blockLinks, err := os.ReadDir(filepath.Join(devicePath, "block"))
 		if err != nil || len(blockLinks) == 0 {
 			continue
 		}
 		name := blockLinks[0].Name()
+		hctlMap[name] = hctl
+	}
 
-		// Read serial
-		serialBytes, err := ioutil.ReadFile(filepath.Join(devicePath, "serial"))
-		serial := ""
-		if err == nil {
-			serial = strings.TrimSpace(string(serialBytes))
+	byPathDir := "/dev/disk/by-path"
+	byPathEntries, err := os.ReadDir(byPathDir)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool)
+
+	for _, entry := range byPathEntries {
+		name := entry.Name()
+		fullPath := filepath.Join(byPathDir, name)
+
+		resolved, err := filepath.EvalSymlinks(fullPath)
+		if err != nil {
+			continue
+		}
+
+		dev := filepath.Base(resolved)
+
+		if !strings.HasPrefix(dev, "sd") || len(dev) != 3 {
+			continue
+		}
+
+		if seen[dev] {
+			continue
+		}
+		seen[dev] = true
+
+		// Expect name like pci-0000:59:00.0-ata-1
+		bus, port, err := parsePCIAta(name)
+		if err != nil {
+			log.Printf("Skipping entry %q: %v", name, err)
+			continue
 		}
 
 		disks = append(disks, DiskInfo{
-			Name:   name,
-			HCTL:   hctl,
-			Serial: serial,
+			Name:   dev,
+			HCTL:   hctlMap[dev],
+			Serial: serials[dev],
+			Path:   name,
+			PCIBus: bus,
+			Port:   port,
 		})
 	}
 
-	// Sort by HCTL (lexicographically is fine for 0:0:0:0 ... 5:0:0:0)
+	// Sort: first by PCI bus, then by ATA port
 	sort.Slice(disks, func(i, j int) bool {
-		return disks[i].HCTL < disks[j].HCTL
+		if disks[i].PCIBus != disks[j].PCIBus {
+			return disks[i].PCIBus > disks[j].PCIBus
+		}
+		return disks[i].Port < disks[j].Port
 	})
 
 	return disks, nil
 }
 
-// Map disk LED index (1-based) to device name, given discovered disks
-func ledIndexToDiskName(disks []DiskInfo, ledIndex int) string {
-	// Map: disk1→2:0:0:0, disk2→3:0:0:0, disk3→4:0:0:0, disk4→5:0:0:0, disk5→0:0:0:0, disk6→1:0:0:0
-	hctlMap := []string{
-		"",        // 0: not used
-		"2:0:0:0", // disk1
-		"3:0:0:0", // disk2
-		"4:0:0:0", // disk3
-		"5:0:0:0", // disk4
-		"0:0:0:0", // disk5
-		"1:0:0:0", // disk6
+// parsePCIAta parses a by-path name like "pci-0000:59:00.0-ata-1" and extracts bus address and port number
+func parsePCIAta(name string) (string, int, error) {
+	parts := strings.Split(name, "-")
+	if len(parts) < 3 {
+		return "", 0, fmt.Errorf("invalid format")
 	}
-	if ledIndex < 1 || ledIndex > 6 {
-		return ""
-	}
-	hctl := hctlMap[ledIndex]
-	for _, d := range disks {
-		if d.HCTL == hctl {
-			return d.Name
+
+	var bus string
+	var port int
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "pci" && i+1 < len(parts) {
+			bus = parts[i+1]
+		}
+		if parts[i] == "ata" && i+1 < len(parts) {
+			p, err := strconv.Atoi(parts[i+1])
+			if err != nil {
+				return "", 0, fmt.Errorf("invalid ata port")
+			}
+			port = p
 		}
 	}
-	return ""
+	if bus == "" || port == 0 {
+		return "", 0, fmt.Errorf("missing pci bus or ata port")
+	}
+	return bus, port, nil
+}
+
+// read disk serials from /run/udev by mapping major:minor to serial
+func getBlockDevicesSerials() (map[string]string, error) {
+	serials := make(map[string]string)
+
+	blockDir := "/sys/block"
+	udevDir := "/run/udev/data"
+
+	entries, err := os.ReadDir(blockDir)
+	if err != nil {
+		return serials, err
+	}
+
+	for _, entry := range entries {
+		dev := entry.Name()
+		devPath := filepath.Join(blockDir, dev, "dev")
+		devNumBytes, err := os.ReadFile(devPath)
+		if err != nil {
+			continue
+		}
+		devNum := strings.TrimSpace(string(devNumBytes)) // e.g. "8:0"
+		udevFile := filepath.Join(udevDir, "b"+devNum)
+		data, err := os.ReadFile(udevFile)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "E:ID_SERIAL_SHORT=") {
+				serial := strings.TrimPrefix(line, "E:ID_SERIAL_SHORT=")
+				serials[dev] = serial
+				break
+			}
+		}
+	}
+
+	return serials, nil
 }
 
 func getDiskActivity(devices []string) (map[string]DiskActivity, error) {
 	stats := make(map[string]DiskActivity)
-	data, err := ioutil.ReadFile("/proc/diskstats")
+	data, err := os.ReadFile("/proc/diskstats")
 	if err != nil {
 		return stats, err
 	}
@@ -450,22 +528,12 @@ func brightnessForNetActivity(activity, maxActivity uint64) byte {
 
 // Call this in main for activity monitoring mode
 func monitorDiskActivityAndSetLeds(fd int, disks []DiskInfo) {
-	// Map LED index to device name
-	ledToDev := make(map[int]string)
-	devToLed := make(map[string]int)
-	for i := 1; i <= 6; i++ {
-		dev := ledIndexToDiskName(disks, i)
-		if dev != "" {
-			ledToDev[i] = dev
-			devToLed[dev] = i
-		}
-	}
-
 	// Get initial stats
 	devices := []string{}
-	for _, dev := range ledToDev {
-		devices = append(devices, dev)
+	for _, disk := range disks {
+		devices = append(devices, disk.Name)
 	}
+
 	prevStats, _ := getDiskActivity(devices)
 
 	// Find max activity for scaling
@@ -493,8 +561,9 @@ func monitorDiskActivityAndSetLeds(fd int, disks []DiskInfo) {
 		}
 
 		// Set disk LEDs
-		for i := 1; i <= 6; i++ {
-			dev := ledToDev[i]
+		//for i := 1; i <= 6; i++ {
+		for i, disk := range disks {
+			dev := disk.Name
 			delta := deltas[dev]
 			r, g, b := colorForActivity(delta.Reads, delta.Writes)
 			brightness := brightnessForActivity(delta.Activity, maxActivity)
@@ -543,7 +612,7 @@ func monitorDiskActivityAndSetLeds(fd int, disks []DiskInfo) {
 }
 
 func getNetworkActivityAll() (rxTotal, txTotal uint64, err error) {
-	data, err := ioutil.ReadFile("/proc/net/dev")
+	data, err := os.ReadFile("/proc/net/dev")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -580,15 +649,9 @@ func main() {
 		return
 	}
 
-	fmt.Println("Discovered Disks:")
+	fmt.Printf("Discovered %d Disks:\n", len(disks))
 	for i, disk := range disks {
 		fmt.Printf("Disk%d: %s (HCTL: %s, Serial: %s)\n", i+1, disk.Name, disk.HCTL, disk.Serial)
-	}
-
-	fmt.Println("UGREEN Disk LED to Device Mapping:")
-	for i := 1; i <= 6; i++ {
-		dev := ledIndexToDiskName(disks, i)
-		fmt.Printf("disk%d LED → %s\n", i, dev)
 	}
 
 	fd, err := syscall.Open("/dev/i2c-0", syscall.O_RDWR, 0600)
