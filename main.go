@@ -1,12 +1,17 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+)
+
+var (
+	confFile = flag.String("config", "config.yaml", "path to the config file")
 )
 
 // ActivityMonitor encapsulates disk and network activity monitoring and LED control
@@ -18,10 +23,25 @@ type ActivityMonitor struct {
 	// Optionally add more fields for state if needed
 }
 
-func NewActivityMonitor(disks []DiskInfo, leds *UGreenLeds) *ActivityMonitor {
+func NewActivityMonitor() (*ActivityMonitor, error) {
+	disks, err := discoverDisks()
+	if err != nil {
+		return nil, fmt.Errorf("error discovering disks: %v", err)
+	}
+	leds, err := NewUGreenLeds()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize LEDs: %v", err)
+	}
 	return &ActivityMonitor{
 		disks: disks,
 		leds:  leds,
+	}, nil
+}
+
+func (am *ActivityMonitor) Close() {
+	if am.leds != nil {
+		am.leds.Close()
+		am.leds = nil
 	}
 }
 
@@ -185,27 +205,26 @@ func (am *ActivityMonitor) getNetworkActivityAll() (rxTotal, txTotal uint64, err
 }
 
 func main() {
-	disks, err := discoverDisks()
+	flag.Parse()
+	log.SetFlags(log.Lshortfile)
+
+	_, err := NewConfigLoader(*confFile)
 	if err != nil {
-		fmt.Println("Error discovering disks:", err)
-		return
-	}
-	if len(disks) == 0 {
-		fmt.Println("No disks found")
-		return
+		log.Fatalf("error reading config at %q: %v", *confFile, err)
 	}
 
-	fmt.Printf("Discovered %d Disks:\n", len(disks))
-	for i, disk := range disks {
+	/*
+
+	 */
+
+	am, err := NewActivityMonitor()
+	if err != nil {
+		log.Fatalf("Failed to create ActivityMonitor: %v", err)
+	}
+	fmt.Printf("Discovered %d Disks:\n", len(am.disks))
+	for i, disk := range am.disks {
 		fmt.Printf("Disk%d: %s (HCTL: %s, Serial: %s Path:%s)\n", i+1, disk.Name, disk.HCTL, disk.Serial, disk.Path)
 	}
-
-	leds, err := NewUGreenLeds()
-	if err != nil {
-		log.Fatalf("Failed to initialize LEDs: %v", err)
-	}
-	defer leds.Close()
-
-	am := NewActivityMonitor(disks, leds)
+	log.Println("Starting activity monitoring...")
 	am.Monitor()
 }
