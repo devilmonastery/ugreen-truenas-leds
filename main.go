@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -72,6 +73,48 @@ func (am *ActivityMonitor) brightnessForActivity(activity uint64, maxActivity ui
 	return byte(val)
 }
 
+// rainbowColor returns an RGB color for a given LED index and total number of LEDs, cycling the rainbow right-to-left over time.
+func (am *ActivityMonitor) rainbowColor(idx, total int, period float64) (r, g, b byte) {
+	if total <= 0 {
+		total = 1
+	}
+	now := time.Now()
+	elapsed := float64(now.UnixNano()%int64(period*1e9)) / 1e9 // seconds in [0,period)
+	// Offset each LED by its index, but reverse direction
+	ledPhase := float64(total-idx-1) / float64(total)
+	hue := math.Mod((elapsed/period)+ledPhase, 1.0)
+	return hsvToRgb(hue, 1.0, 1.0)
+}
+
+// hsvToRgb converts HSV values (h in 0..1, s/v in 0..1) to RGB (0..255)
+func hsvToRgb(h, s, v float64) (r, g, b byte) {
+	var rr, gg, bb float64
+	if s == 0.0 {
+		rr, gg, bb = v, v, v
+	} else {
+		i := int(h * 6)
+		f := h*6 - float64(i)
+		p := v * (1 - s)
+		q := v * (1 - f*s)
+		t := v * (1 - (1-f)*s)
+		switch i % 6 {
+		case 0:
+			rr, gg, bb = v, t, p
+		case 1:
+			rr, gg, bb = q, v, p
+		case 2:
+			rr, gg, bb = p, v, t
+		case 3:
+			rr, gg, bb = p, q, v
+		case 4:
+			rr, gg, bb = t, p, v
+		case 5:
+			rr, gg, bb = v, p, q
+		}
+	}
+	return byte(rr * 255), byte(gg * 255), byte(bb * 255)
+}
+
 func (am *ActivityMonitor) Monitor() {
 	conf := am.configLoader.Config()
 	subscriber := am.configLoader.Subscribe()
@@ -94,9 +137,14 @@ func (am *ActivityMonitor) Monitor() {
 		select {
 		case newconf := <-subscriber:
 			conf = &newconf
-			log.Printf("new config, poll_interval=%v", conf.PollInterval*time.Millisecond)
-			ticker.Reset(conf.PollInterval * time.Millisecond)
+			log.Printf("new config, %#v", conf)
+			log.Printf("PollInterval %dms, RainbowCycleTime %s", conf.PollInterval.Milliseconds(), conf.RainbowCycleTime)
+			ticker.Reset(conf.PollInterval)
 		case <-ticker.C:
+			rainbowTime := conf.RainbowCycleTime.Seconds()
+			if rainbowTime <= 0 {
+				rainbowTime = 4 // default to 4 seconds if not set
+			}
 
 			// Set Disk activity lights
 			currStats, _ := getDiskActivity(devices)
@@ -110,19 +158,23 @@ func (am *ActivityMonitor) Monitor() {
 					am.maxActivity = activity
 				}
 				deltas[dev] = DiskActivity{Reads: reads, Writes: writes, Activity: activity}
-				//log.Printf("deltas for %s: activity:%d max:%d, bright:%d", dev, activity, am.maxActivity, am.brightnessForActivity(activity, am.maxActivity))
+				// log.Printf("deltas for %s: activity:%d max:%d, bright:%d", dev, activity, am.maxActivity, am.brightnessForActivity(activity, am.maxActivity))
 			}
 			for i, disk := range am.disks {
-				am.leds.SetLedColor(i+2, 255, 255, 255)
+				am.leds.SetLedMode(i+2, LedModeOn, nil)
 				dev := disk.Name
 				delta := deltas[dev]
-				brightness := am.brightnessForActivity(delta.Activity, am.maxActivity)
-				if brightness == 0 {
-					am.leds.SetLedMode(i+2, LedModeOff, nil)
+				if delta.Activity == 0 {
+					//am.leds.SetLedMode(i+2, LedModeOff, nil)
+					// ct := conf.RainbowCycleTime.Seconds()
+					r, g, b := am.rainbowColor(i+1, 1+len(am.disks), rainbowTime)
+					am.leds.SetLedColor(i+2, r, g, b)
+					am.leds.SetLedBrightness(i+2, 64)
 				} else {
-					// am.leds.SetLedColor(i+2, r, g, b)
-					am.leds.SetLedBrightness(i+2, brightness)
 					am.leds.SetLedMode(i+2, LedModeOn, nil)
+					am.leds.SetLedColor(i+2, 255, 255, 255)
+					brightness := am.brightnessForActivity(delta.Activity, am.maxActivity)
+					am.leds.SetLedBrightness(i+2, brightness)
 				}
 			}
 			prevStats = currStats
@@ -143,14 +195,17 @@ func (am *ActivityMonitor) Monitor() {
 				am.maxLanActivity = total
 			}
 
-			brightness := am.brightnessForActivity(total, am.maxLanActivity)
 			lanLedID := 1 // "lan" is index 1 in ledNames
 			//log.Printf("deltas for net: activity:%d max:%d, bright:%d", total, am.maxLanActivity, brightness)
 
-			if brightness == 0 {
-				am.leds.SetLedMode(lanLedID, LedModeOff, nil)
+			if total == 0 {
+				// am.leds.SetLedMode(lanLedID, LedModeOff, nil)
+				r, g, b := am.rainbowColor(0, 1+len(am.disks), rainbowTime)
+				am.leds.SetLedColor(lanLedID, r, g, b)
+				am.leds.SetLedBrightness(lanLedID, 64)
 			} else {
 				// am.leds.SetLedColor(lanLedID, r, g, b)
+				brightness := am.brightnessForActivity(total, am.maxLanActivity)
 				am.leds.SetLedColor(lanLedID, 255, 255, 255)
 				am.leds.SetLedBrightness(lanLedID, brightness)
 				// Blink: on blinkMs, off blinkMs
