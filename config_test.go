@@ -25,7 +25,7 @@ func TestConfigLoader(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 	cfg := loader.Config()
-	if cfg.PollIntervalMs != 123*time.Millisecond {
-		t.Errorf("expected PollIntervalMs=123ms, got %v", cfg.PollIntervalMs)
+	if cfg.PollInterval != 123*time.Millisecond {
+		t.Errorf("expected PollIntervalMs=123ms, got %v", cfg.PollInterval)
 	}
 }

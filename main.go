@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/devilmonastery/configloader"
 )
 
 var (
@@ -20,21 +22,30 @@ type ActivityMonitor struct {
 	leds           *UGreenLeds
 	maxActivity    uint64
 	maxLanActivity uint64
-	// Optionally add more fields for state if needed
+	configLoader   *configloader.ConfigLoader[Config]
 }
 
-func NewActivityMonitor() (*ActivityMonitor, error) {
+func NewActivityMonitor(configPath string) (*ActivityMonitor, error) {
+
+	configLoader, err := NewConfigLoader(configPath)
+	if err != nil {
+		log.Fatalf("error reading config at %q: %v", *confFile, err)
+	}
+
 	disks, err := discoverDisks()
 	if err != nil {
 		return nil, fmt.Errorf("error discovering disks: %v", err)
 	}
+
 	leds, err := NewUGreenLeds()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize LEDs: %v", err)
 	}
+
 	return &ActivityMonitor{
-		disks: disks,
-		leds:  leds,
+		configLoader: configLoader,
+		disks:        disks,
+		leds:         leds,
 	}, nil
 }
 
@@ -97,8 +108,64 @@ func (am *ActivityMonitor) brightnessForNetActivity(activity, maxActivity uint64
 	return byte(val)
 }
 
-// Call this in main for activity monitoring mode
 func (am *ActivityMonitor) Monitor() {
+	conf := am.configLoader.Config()
+	subscriber := am.configLoader.Subscribe()
+
+	ticker := time.NewTicker(conf.PollInterval * time.Millisecond)
+	defer ticker.Stop()
+
+	devices := []string{}
+	for _, disk := range am.disks {
+		devices = append(devices, disk.Name)
+	}
+
+	prevStats, _ := getDiskActivity(devices)
+
+	for {
+		select {
+		case newconf := <-subscriber:
+			conf = &newconf
+			log.Printf("new config, poll_interval=%v", conf.PollInterval*time.Millisecond)
+			ticker.Reset(conf.PollInterval * time.Millisecond)
+		case <-ticker.C:
+			log.Printf("tick\n")
+			currStats, _ := getDiskActivity(devices)
+
+			deltas := make(map[string]DiskActivity)
+			for dev, curr := range currStats {
+				prev := prevStats[dev]
+				reads := curr.Reads - prev.Reads
+				writes := curr.Writes - prev.Writes
+				activity := reads + writes
+				if activity > am.maxActivity {
+					am.maxActivity = activity
+				}
+				deltas[dev] = DiskActivity{Reads: reads, Writes: writes, Activity: activity}
+			}
+
+			// Set disk LEDs
+			for i, disk := range am.disks {
+				dev := disk.Name
+				delta := deltas[dev]
+				r, g, b := am.colorForActivity(delta.Reads, delta.Writes)
+				brightness := am.brightnessForActivity(delta.Activity, am.maxActivity)
+				if r == 0 && g == 0 && b == 0 {
+					am.leds.SetLedMode(i+2, LedModeOff, nil)
+				} else {
+					am.leds.SetLedColor(i+2, r, g, b)
+					am.leds.SetLedBrightness(i+2, brightness)
+					am.leds.SetLedMode(i+2, LedModeOn, nil)
+				}
+			}
+
+			prevStats = currStats
+		}
+	}
+}
+
+// Call this in main for activity monitoring mode
+func (am *ActivityMonitor) Monitor2() {
 	devices := []string{}
 	for _, disk := range am.disks {
 		devices = append(devices, disk.Name)
@@ -206,18 +273,9 @@ func (am *ActivityMonitor) getNetworkActivityAll() (rxTotal, txTotal uint64, err
 
 func main() {
 	flag.Parse()
-	log.SetFlags(log.Lshortfile)
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
 
-	_, err := NewConfigLoader(*confFile)
-	if err != nil {
-		log.Fatalf("error reading config at %q: %v", *confFile, err)
-	}
-
-	/*
-
-	 */
-
-	am, err := NewActivityMonitor()
+	am, err := NewActivityMonitor(*confFile)
 	if err != nil {
 		log.Fatalf("Failed to create ActivityMonitor: %v", err)
 	}
