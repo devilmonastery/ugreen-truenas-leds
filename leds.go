@@ -63,11 +63,6 @@ type UGreenLeds struct {
 	statusMu      sync.Mutex
 }
 
-var (
-	statusMu      sync.Mutex
-	lastLedStatus = make(map[int]LedStatus)
-)
-
 // NewUGreenLeds initializes and returns a new UGreenLeds instance
 func NewUGreenLeds() (*UGreenLeds, error) {
 	fd, err := syscall.Open("/dev/i2c-0", syscall.O_RDWR, 0600)

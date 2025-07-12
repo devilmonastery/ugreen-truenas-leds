@@ -56,21 +56,6 @@ func (am *ActivityMonitor) Close() {
 	}
 }
 
-func (am *ActivityMonitor) colorForActivity(reads, writes uint64) (r, g, b byte) {
-	if reads == 0 && writes == 0 {
-		return 0, 0, 0 // off
-	}
-	total := reads + writes
-	if total == 0 {
-		return 0, 0, 0
-	}
-	// Blend: blue for reads, red for writes
-	// Ratio: reads/(reads+writes) for blue, writes/(reads+writes) for red
-	blue := float64(reads) / float64(total)
-	red := float64(writes) / float64(total)
-	return byte(red * 255), 0, byte(blue * 255)
-}
-
 func (am *ActivityMonitor) brightnessForActivity(activity uint64, maxActivity uint64) byte {
 	if maxActivity < activity {
 		maxActivity = activity
@@ -81,20 +66,6 @@ func (am *ActivityMonitor) brightnessForActivity(activity uint64, maxActivity ui
 		val = 255
 	}
 	return byte(val)
-}
-
-func (am *ActivityMonitor) colorForNetActivity(rx, tx uint64) (r, g, b byte) {
-	if rx == 0 && tx == 0 {
-		return 0, 0, 0 // off
-	}
-	total := rx + tx
-	if total == 0 {
-		return 0, 0, 0
-	}
-	// Blend: blue for RX, red for TX
-	blue := float64(rx) / float64(total)
-	red := float64(tx) / float64(total)
-	return byte(red * 255), 0, byte(blue * 255)
 }
 
 func (am *ActivityMonitor) Monitor() {
