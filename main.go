@@ -72,11 +72,11 @@ func (am *ActivityMonitor) colorForActivity(reads, writes uint64) (r, g, b byte)
 }
 
 func (am *ActivityMonitor) brightnessForActivity(activity uint64, maxActivity uint64) byte {
-	if maxActivity == 0 {
-		return 32 // minimum visible
+	if maxActivity < activity {
+		maxActivity = activity
 	}
-	// Scale: min 32, max 255
-	val := 32 + int(float64(activity)/float64(maxActivity)*223)
+
+	val := int(float64(activity) / float64(maxActivity) * 255)
 	if val > 255 {
 		val = 255
 	}
@@ -97,17 +97,6 @@ func (am *ActivityMonitor) colorForNetActivity(rx, tx uint64) (r, g, b byte) {
 	return byte(red * 255), 0, byte(blue * 255)
 }
 
-func (am *ActivityMonitor) brightnessForNetActivity(activity, maxActivity uint64) byte {
-	if maxActivity == 0 {
-		return 32 // minimum visible
-	}
-	val := 32 + int(float64(activity)/float64(maxActivity)*223)
-	if val > 255 {
-		val = 255
-	}
-	return byte(val)
-}
-
 func (am *ActivityMonitor) Monitor() {
 	conf := am.configLoader.Config()
 	subscriber := am.configLoader.Subscribe()
@@ -121,6 +110,10 @@ func (am *ActivityMonitor) Monitor() {
 	}
 
 	prevStats, _ := getDiskActivity(devices)
+	lastRxTotal, lastTxTotal, err := am.getNetworkActivityAll()
+	if err != nil {
+		log.Printf("Error reading network activity: %v", err)
+	}
 
 	for {
 		select {
@@ -129,9 +122,9 @@ func (am *ActivityMonitor) Monitor() {
 			log.Printf("new config, poll_interval=%v", conf.PollInterval*time.Millisecond)
 			ticker.Reset(conf.PollInterval * time.Millisecond)
 		case <-ticker.C:
-			log.Printf("tick\n")
-			currStats, _ := getDiskActivity(devices)
 
+			// Set Disk activity lights
+			currStats, _ := getDiskActivity(devices)
 			deltas := make(map[string]DiskActivity)
 			for dev, curr := range currStats {
 				prev := prevStats[dev]
@@ -142,104 +135,59 @@ func (am *ActivityMonitor) Monitor() {
 					am.maxActivity = activity
 				}
 				deltas[dev] = DiskActivity{Reads: reads, Writes: writes, Activity: activity}
+				//log.Printf("deltas for %s: activity:%d max:%d, bright:%d", dev, activity, am.maxActivity, am.brightnessForActivity(activity, am.maxActivity))
 			}
-
-			// Set disk LEDs
 			for i, disk := range am.disks {
+				am.leds.SetLedColor(i+2, 255, 255, 255)
 				dev := disk.Name
 				delta := deltas[dev]
-				r, g, b := am.colorForActivity(delta.Reads, delta.Writes)
 				brightness := am.brightnessForActivity(delta.Activity, am.maxActivity)
-				if r == 0 && g == 0 && b == 0 {
+				if brightness == 0 {
 					am.leds.SetLedMode(i+2, LedModeOff, nil)
 				} else {
-					am.leds.SetLedColor(i+2, r, g, b)
+					// am.leds.SetLedColor(i+2, r, g, b)
 					am.leds.SetLedBrightness(i+2, brightness)
 					am.leds.SetLedMode(i+2, LedModeOn, nil)
 				}
 			}
-
 			prevStats = currStats
-		}
-	}
-}
 
-// Call this in main for activity monitoring mode
-func (am *ActivityMonitor) Monitor2() {
-	devices := []string{}
-	for _, disk := range am.disks {
-		devices = append(devices, disk.Name)
-	}
-
-	prevStats, _ := getDiskActivity(devices)
-
-	am.maxActivity = 0
-	am.maxLanActivity = 0
-
-	pollMs := 50
-
-	for {
-		time.Sleep(time.Duration(pollMs) * time.Millisecond)
-
-		// get Disk activity
-		currStats, _ := getDiskActivity(devices)
-
-		deltas := make(map[string]DiskActivity)
-		for dev, curr := range currStats {
-			prev := prevStats[dev]
-			reads := curr.Reads - prev.Reads
-			writes := curr.Writes - prev.Writes
-			activity := reads + writes
-			if activity > am.maxActivity {
-				am.maxActivity = activity
+			// Set Network activity lights
+			rxTotal, txTotal, err := am.getNetworkActivityAll()
+			if err != nil {
+				log.Printf("Error reading network activity: %v", err)
+				continue
 			}
-			deltas[dev] = DiskActivity{Reads: reads, Writes: writes, Activity: activity}
-		}
+			rxDelta := rxTotal - lastRxTotal
+			lastRxTotal = rxTotal
+			txDelta := txTotal - lastTxTotal
+			lastTxTotal = txTotal
 
-		// Set disk LEDs
-		for i, disk := range am.disks {
-			dev := disk.Name
-			delta := deltas[dev]
-			r, g, b := am.colorForActivity(delta.Reads, delta.Writes)
-			brightness := am.brightnessForActivity(delta.Activity, am.maxActivity)
-			if r == 0 && g == 0 && b == 0 {
-				am.leds.SetLedMode(i+2, LedModeOff, nil)
+			total := rxDelta + txDelta
+			if total > am.maxLanActivity {
+				am.maxLanActivity = total
+			}
+
+			brightness := am.brightnessForActivity(total, am.maxLanActivity)
+			lanLedID := 1 // "lan" is index 1 in ledNames
+			//log.Printf("deltas for net: activity:%d max:%d, bright:%d", total, am.maxLanActivity, brightness)
+
+			if brightness == 0 {
+				am.leds.SetLedMode(lanLedID, LedModeOff, nil)
 			} else {
-				am.leds.SetLedColor(i+2, r, g, b)
-				am.leds.SetLedBrightness(i+2, brightness)
-				am.leds.SetLedMode(i+2, LedModeOn, nil)
+				// am.leds.SetLedColor(lanLedID, r, g, b)
+				am.leds.SetLedColor(lanLedID, 255, 255, 255)
+				am.leds.SetLedBrightness(lanLedID, brightness)
+				// Blink: on blinkMs, off blinkMs
+				onMs := 100
+				offMs := 100
+				high := onMs + offMs
+				params := []byte{
+					byte(high >> 8), byte(high),
+					byte(onMs >> 8), byte(onMs),
+				}
+				am.leds.SetLedMode(lanLedID, LedModeBlink, params)
 			}
-		}
-		prevStats = currStats
-
-		// Get network activity and set lan LED
-		rxTotal, txTotal, err := am.getNetworkActivityAll()
-		if err != nil {
-			log.Printf("Error reading network activity: %v", err)
-			continue
-		}
-		total := rxTotal + txTotal
-		if total > am.maxLanActivity {
-			am.maxLanActivity = total
-		}
-		r, g, b := am.colorForNetActivity(rxTotal, txTotal)
-		brightness := am.brightnessForNetActivity(total, am.maxLanActivity)
-		lanLedID := 1 // "lan" is index 1 in ledNames
-
-		if r == 0 && g == 0 && b == 0 {
-			am.leds.SetLedMode(lanLedID, LedModeOff, nil)
-		} else {
-			am.leds.SetLedColor(lanLedID, r, g, b)
-			am.leds.SetLedBrightness(lanLedID, brightness)
-			// Blink: on blinkMs, off blinkMs
-			onMs := 100
-			offMs := 100
-			high := onMs + offMs
-			params := []byte{
-				byte(high >> 8), byte(high),
-				byte(onMs >> 8), byte(onMs),
-			}
-			am.leds.SetLedMode(lanLedID, LedModeBlink, params)
 		}
 	}
 }
