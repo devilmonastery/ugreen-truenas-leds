@@ -61,7 +61,11 @@ func (am *ActivityMonitor) brightnessForActivity(activity uint64, maxActivity ui
 		maxActivity = activity
 	}
 
-	val := int(float64(activity) / float64(maxActivity) * 255)
+	if activity == 0 {
+		return 0 // No activity, no brightness
+	}
+
+	val := 127 + int(float64(activity)/float64(maxActivity)*128)
 	if val > 255 {
 		val = 255
 	}

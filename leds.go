@@ -18,8 +18,8 @@ const (
 	I2C_SMBUS_I2C_BLOCK_DATA = 8
 	maxRetry                 = 5
 	usleepModification       = 500 * time.Microsecond
-	usleepModificationRetry  = 3 * time.Millisecond
-	usleepQueryResult        = 2 * time.Millisecond
+	usleepModificationRetry  = 500 * time.Microsecond
+	usleepQueryResult        = 500 * time.Microsecond
 )
 
 // Exported LED mode constants
@@ -297,15 +297,14 @@ func confirmStatus(fd int, id int, wantOn *bool) bool {
 func modifyLedWithRetry(fd int, id int, command byte, params []byte, wantOn *bool) error {
 	var lastErr error
 	for retry := 0; retry < maxRetry; retry++ {
+		lastErr = writeLedCommand(fd, id, command, params)
+		if lastErr == nil && confirmStatus(fd, id, wantOn) {
+			return nil
+		}
 		if retry == 0 {
 			time.Sleep(usleepModification)
 		} else {
 			time.Sleep(usleepModificationRetry)
-		}
-		lastErr = writeLedCommand(fd, id, command, params)
-		if lastErr == nil && confirmStatus(fd, id, wantOn) {
-			time.Sleep(2 * time.Millisecond) // Give device time before next modification
-			return nil
 		}
 	}
 	return fmt.Errorf("failed to set %s after %d retries: %v", ledNames[id], maxRetry, lastErr)
