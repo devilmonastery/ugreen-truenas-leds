@@ -13,14 +13,14 @@ func TestConfigLoader(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	defer os.Remove(f.Name())
-	f.WriteString("poll_interval: 123\n")
+	f.WriteString("poll_interval: 123ms\n")
 	f.Close()
 
 	loader, err := NewConfigLoader(f.Name())
 	if err != nil {
 		t.Fatalf("failed to create config loader: %v", err)
 	}
-	err = loader.Load(f.Name())
+	err = loader.Load()
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}

@@ -165,11 +165,14 @@ func (am *ActivityMonitor) Monitor() {
 				dev := disk.Name
 				delta := deltas[dev]
 				if delta.Activity == 0 {
-					//am.leds.SetLedMode(i+2, LedModeOff, nil)
-					// ct := conf.RainbowCycleTime.Seconds()
-					r, g, b := am.rainbowColor(i+1, 1+len(am.disks), rainbowTime)
-					am.leds.SetLedColor(i+2, r, g, b)
-					am.leds.SetLedBrightness(i+2, 64)
+					if !*conf.EnableRainbow {
+						am.leds.SetLedMode(i+2, LedModeOff, nil)
+					} else {
+						// Use rainbow color for inactive disks
+						r, g, b := am.rainbowColor(i+1, 1+len(am.disks), rainbowTime)
+						am.leds.SetLedColor(i+2, r, g, b)
+						am.leds.SetLedBrightness(i+2, *conf.RainbowBrightness)
+					}
 				} else {
 					am.leds.SetLedMode(i+2, LedModeOn, nil)
 					am.leds.SetLedColor(i+2, 255, 255, 255)
@@ -199,10 +202,13 @@ func (am *ActivityMonitor) Monitor() {
 			//log.Printf("deltas for net: activity:%d max:%d, bright:%d", total, am.maxLanActivity, brightness)
 
 			if total == 0 {
-				// am.leds.SetLedMode(lanLedID, LedModeOff, nil)
-				r, g, b := am.rainbowColor(0, 1+len(am.disks), rainbowTime)
-				am.leds.SetLedColor(lanLedID, r, g, b)
-				am.leds.SetLedBrightness(lanLedID, 64)
+				if !*conf.EnableRainbow {
+					am.leds.SetLedMode(lanLedID, LedModeOff, nil)
+				} else {
+					r, g, b := am.rainbowColor(0, 1+len(am.disks), rainbowTime)
+					am.leds.SetLedColor(lanLedID, r, g, b)
+					am.leds.SetLedBrightness(lanLedID, *conf.RainbowBrightness)
+				}
 			} else {
 				// am.leds.SetLedColor(lanLedID, r, g, b)
 				brightness := am.brightnessForActivity(total, am.maxLanActivity)
