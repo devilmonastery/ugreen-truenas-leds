@@ -12,7 +12,7 @@ const (
 	minPollInterval     = 10 * time.Millisecond
 	maxPollInterval     = 5000 * time.Millisecond
 
-	defaultRainbowCycleTime = 4 * time.Second
+	defaultRainbowCycleTime = 3 * time.Second
 	minRainbowCycleTime     = 1 * time.Second
 	maxRainbowCycleTime     = 10 * time.Second
 )
@@ -25,7 +25,7 @@ type Config struct {
 }
 
 func NewConfigLoader(path string) (*configloader.ConfigLoader[Config], error) {
-	ret, err := configloader.NewConfigLoader[Config](path)
+	ret, err := configloader.NewConfigLoader[Config]()
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +75,9 @@ func NewConfigLoader(path string) (*configloader.ConfigLoader[Config], error) {
 		return conf, nil
 	})
 
-	ret.Start()
+	err = ret.SetConfigPath(path, false)
+	if err != nil {
+		log.Printf("error using config path %q: %v", path, err)
+	}
 	return ret, nil
 }

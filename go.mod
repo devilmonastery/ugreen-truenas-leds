@@ -2,7 +2,7 @@ module truenas-leds
 
 go 1.24.3
 
-require github.com/devilmonastery/configloader v0.2.1
+require github.com/devilmonastery/configloader v0.2.4
 
 require (
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
