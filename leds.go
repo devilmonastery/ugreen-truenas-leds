@@ -11,7 +11,6 @@ import (
 
 const (
 	UGREEN_LED_I2C_ADDR      = 0x3a
-	NUM_LEDS                 = 10
 	I2C_SLAVE                = 0x0703
 	I2C_SMBUS                = 0x0720
 	I2C_SMBUS_READ           = 1

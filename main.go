@@ -259,6 +259,65 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 
+	if len(flag.Args()) > 0 {
+		cmd := flag.Arg(0)
+		switch cmd {
+		case "get":
+			if len(flag.Args()) < 2 {
+				fmt.Println("Usage: truenas-leds get <led_id>")
+				os.Exit(1)
+			}
+			ledID, err := strconv.Atoi(flag.Arg(1))
+			if err != nil {
+				fmt.Printf("Invalid led_id: %v\n", err)
+				os.Exit(1)
+			}
+			leds, err := NewUGreenLeds()
+			if err != nil {
+				log.Fatalf("Failed to open LEDs: %v", err)
+			}
+			defer leds.Close()
+			status, err := readLedStatus(leds.fd, ledID)
+			if err != nil {
+				fmt.Printf("Error reading LED %d: %v\n", ledID, err)
+				os.Exit(1)
+			}
+			fmt.Printf("LED %d: %+v\n", ledID, status)
+			return
+		case "set":
+			if len(flag.Args()) < 6 {
+				fmt.Println("Usage: truenas-leds set <led_id> <r> <g> <b> <brightness>")
+				os.Exit(1)
+			}
+			ledID, _ := strconv.Atoi(flag.Arg(1))
+			r, _ := strconv.Atoi(flag.Arg(2))
+			g, _ := strconv.Atoi(flag.Arg(3))
+			b, _ := strconv.Atoi(flag.Arg(4))
+			brightness, _ := strconv.Atoi(flag.Arg(5))
+			leds, err := NewUGreenLeds()
+			if err != nil {
+				log.Fatalf("Failed to open LEDs: %v", err)
+			}
+			defer leds.Close()
+			if err := leds.SetLedColor(ledID, byte(r), byte(g), byte(b)); err != nil {
+				fmt.Printf("Error setting color: %v\n", err)
+				os.Exit(1)
+			}
+			if err := leds.SetLedBrightness(ledID, byte(brightness)); err != nil {
+				fmt.Printf("Error setting brightness: %v\n", err)
+				os.Exit(1)
+			}
+			if err := leds.SetLedMode(ledID, LedModeOn, nil); err != nil {
+				fmt.Printf("Error setting mode: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Set LED %d to RGB(%d,%d,%d) brightness %d\n", ledID, r, g, b, brightness)
+			return
+		}
+		fmt.Println("Unknown command. Supported: get, set")
+		os.Exit(1)
+	}
+
 	am, err := NewActivityMonitor(*confFile)
 	if err != nil {
 		log.Fatalf("Failed to create ActivityMonitor: %v", err)
