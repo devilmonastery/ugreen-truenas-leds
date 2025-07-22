@@ -1,0 +1,13 @@
+[Unit]
+Description=UGREEN LED Activity Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/truenas-leds -config /etc/truenas-leds/config.yaml
+Restart=on-failure
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
