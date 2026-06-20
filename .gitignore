@@ -1,3 +1,4 @@
 truenas-leds
 bin/
+config.yaml
 localbuild.sh

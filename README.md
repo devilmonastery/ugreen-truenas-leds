@@ -6,7 +6,7 @@ LEDs accordingly.
 
 ## Configuration
 
-The program uses a YAML configuration file (default: `config.yaml`) to control its behavior. Here's a complete configuration example with all available options:
+The program uses a YAML configuration file (default: `config.yaml`) to control its behavior. Use `config.example.yaml` as a starting point:
 
 ```yaml
 # I2C device path for LED control
@@ -60,13 +60,21 @@ rainbow_brightness: 48
 ## Building
 
 ```bash
-go build -o truenas-leds .
+make build
 ```
 
 ## Running
 
 ```bash
-./truenas-leds --config=config.yaml
+cp config.example.yaml config.yaml
+./bin/truenas-leds --config=config.yaml
+```
+
+## Installing
+
+```bash
+make build
+sudo scripts/install.sh
 ```
 
 ## Finding your i2c device
