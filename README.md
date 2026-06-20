@@ -10,7 +10,8 @@ The program uses a YAML configuration file (default: `config.yaml`) to control i
 
 ```yaml
 # I2C device path for LED control
-# Find your device with: i2cdetect -l
+# Optional. If omitted, the program scans /dev/i2c-* for the UGREEN LED controller.
+# Find devices with: i2cdetect -l
 device: /dev/i2c-2
 
 # How often to poll for disk and network activity
@@ -40,7 +41,7 @@ rainbow_brightness: 48
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `device` | string | `/dev/i2c-2` | I2C device path for communicating with LEDs |
+| `device` | string | auto-detect | I2C device path for communicating with LEDs |
 | `poll_interval` | duration | `100ms` | Frequency of disk/network activity polling |
 | `rainbow_cycle_time` | duration | `3s` | Time for one complete rainbow cycle |
 | `enable_rainbow` | boolean | `true` | Show rainbow colors on inactive disks |
@@ -71,6 +72,9 @@ go build -o truenas-leds .
 ## Finding your i2c device
 
 The default i2c device may not work for you. Find one that does.
+
+If auto-detection picks the wrong bus, set `device: /dev/i2c-2` in your config
+or pass `--device=/dev/i2c-2`.
 
 ```bash
 $ i2cdetect -l

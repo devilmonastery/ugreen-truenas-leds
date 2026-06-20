@@ -3,6 +3,11 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -73,10 +78,21 @@ type UGreenLeds struct {
 }
 
 // NewUGreenLeds initializes and returns a new UGreenLeds instance
-func NewUGreenLeds(path string) (*UGreenLeds, error) {
-	fd, err := syscall.Open(path, syscall.O_RDWR, 0600)
+func NewUGreenLeds(device string) (*UGreenLeds, error) {
+	if device == "" {
+		var err error
+		device, err = detectUGreenLedDevice()
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("Using auto-detected LED I2C device: %s", device)
+		log.Printf("Set device: %s in config.yaml to skip auto-detection if needed", device)
+	} else {
+		log.Printf("Using configured LED I2C device: %s", device)
+	}
+	fd, err := syscall.Open(device, syscall.O_RDWR, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open I2C device: %w", err)
+		return nil, fmt.Errorf("failed to open I2C device %q: %w", device, err)
 	}
 	if err := ioctlSetSlave(fd, UGREEN_LED_I2C_ADDR); err != nil {
 		syscall.Close(fd)
@@ -87,6 +103,54 @@ func NewUGreenLeds(path string) (*UGreenLeds, error) {
 		lastLedStates: make(map[int]ledState),
 		lastLedStatus: make(map[int]LedStatus),
 	}, nil
+}
+
+func detectUGreenLedDevice() (string, error) {
+	paths, err := filepath.Glob("/dev/i2c-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to list I2C devices: %w", err)
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("no I2C devices found at /dev/i2c-*")
+	}
+
+	sort.Slice(paths, func(i, j int) bool {
+		return i2cBusNumber(paths[i]) < i2cBusNumber(paths[j])
+	})
+	log.Printf("Discovered %d I2C devices: %s", len(paths), strings.Join(paths, ", "))
+
+	for _, path := range paths {
+		fd, err := syscall.Open(path, syscall.O_RDWR, 0600)
+		if err != nil {
+			continue
+		}
+
+		if err := ioctlSetSlave(fd, UGREEN_LED_I2C_ADDR); err == nil && probeLedController(fd) {
+			syscall.Close(fd)
+			return path, nil
+		}
+		syscall.Close(fd)
+	}
+
+	return "", fmt.Errorf("failed to auto-detect UGREEN LED controller at I2C address 0x%x across %d buses", UGREEN_LED_I2C_ADDR, len(paths))
+}
+
+func i2cBusNumber(path string) int {
+	bus, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(path), "i2c-"))
+	if err != nil {
+		return int(^uint(0) >> 1)
+	}
+	return bus
+}
+
+func probeLedController(fd int) bool {
+	for id := range ledNames {
+		status, err := readLedStatus(fd, id)
+		if err == nil && status.Available {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *UGreenLeds) Close() {

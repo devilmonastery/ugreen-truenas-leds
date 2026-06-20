@@ -35,6 +35,10 @@ func NewConfigLoader(path string) (*configloader.ConfigLoader[Config], error) {
 	ret.RegisterCallback(func(conf Config) (Config, error) {
 		log.Printf("Loaded config: %+v", conf)
 
+		if conf.Device == "" {
+			log.Printf("Warning: device unset, will auto-detect LED I2C device")
+		}
+
 		if conf.PollInterval <= 0 {
 			conf.PollInterval = defaultPollInterval
 			log.Printf("Warning: PollInterval unset, using %s", conf.PollInterval)

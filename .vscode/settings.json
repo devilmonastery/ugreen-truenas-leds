@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^make test$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^make build$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

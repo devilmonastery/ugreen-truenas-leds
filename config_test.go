@@ -16,7 +16,7 @@ func TestConfigLoader(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	defer os.Remove(f.Name())
-	f.WriteString("poll_interval: 123ms\n")
+	f.WriteString("device: /dev/i2c-2\npoll_interval: 123ms\n")
 	f.Close()
 
 	loader, err := NewConfigLoader(f.Name())
@@ -30,6 +30,9 @@ func TestConfigLoader(t *testing.T) {
 	cfg := loader.Config()
 	if cfg.PollInterval != 123*time.Millisecond {
 		t.Errorf("expected PollIntervalMs=123ms, got %v", cfg.PollInterval)
+	}
+	if cfg.Device != "/dev/i2c-2" {
+		t.Errorf("expected Device=/dev/i2c-2, got %q", cfg.Device)
 	}
 }
 
@@ -48,5 +51,8 @@ func TestEmptyConfig(t *testing.T) {
 
 	if cfg.PollInterval != defaultPollInterval {
 		t.Errorf("expected PollIntervalMs=100ms, got %v", cfg.PollInterval)
+	}
+	if cfg.Device != "" {
+		t.Errorf("expected Device to be empty for auto-detection, got %q", cfg.Device)
 	}
 }
